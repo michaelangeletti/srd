@@ -50,11 +50,11 @@ def main():
     REMOTE_HOST_ALIAS = "sul-smpl.stanford.edu"
 
     if IS_MACOS:
-        LOG_DIR = "/Users/dav1/Desktop/Desktop_Files/srd_logs"
+        LOG_DIR = "/Users/YOUR_USERNAME/Desktop/srd_logs"   # ← change this
     else:
-        LOG_DIR        = "/home/dav1/srd_logs"
-        REMOTE_USER    = "smpl-5220r"
-        CONTROL_SOCKET = "/tmp/srd_ctl_%h"
+        LOG_DIR        = "/home/YOUR_USERNAME/srd_logs"      # ← change this
+        REMOTE_USER    = "YOUR_SERVER_USERNAME"              # ← change this
+        CONTROL_SOCKET = "/tmp/srd_ctl_%h"                  # leave as-is
 
     # --- Parse Command-Line Arguments ---
 
