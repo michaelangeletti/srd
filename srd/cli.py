@@ -5,6 +5,7 @@ Copies files from a remote server via SFTP/rsync, or from a local directory,
 and validates checksums. Works on macOS and Ubuntu 24.04.
 """
 
+import os
 import subprocess
 import logging
 import sys
@@ -25,7 +26,11 @@ REMOTE_HOST_ALIAS = "sul-smpl.stanford.edu"  # SSH hostname — update if needed
 
 REMOTE_USER    = "YOUR_SERVER_USERNAME"   # ← your username on the remote server
 CONTROL_SOCKET = "/tmp/srd_ctl_%h"        # leave as-is
-LOG_DIR        = "/path/to/your/srd_logs" # ← where logs will be saved on this machine
+LOG_DIR        = "/path/to/your/srd_logs" # ← fallback if SRD_LOG_DIR env var is not set
+
+# Override LOG_DIR with environment variable if set.
+# Add to ~/.zshrc:  export SRD_LOG_DIR="/Users/yourname/Desktop/srd_logs"
+LOG_DIR = os.environ.get("SRD_LOG_DIR", LOG_DIR)
 
 # --- ANSI Color Codes ---
 class Colors:
