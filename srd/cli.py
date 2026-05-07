@@ -24,13 +24,16 @@ IS_MACOS = sys.platform == "darwin"
 # --- Fixed Configuration (edit these as needed) ---
 REMOTE_HOST_ALIAS = "sul-smpl.stanford.edu"  # SSH hostname — update if needed
 
-REMOTE_USER    = "YOUR_SERVER_USERNAME"   # ← your username on the remote server
+REMOTE_USER    = "YOUR_SERVER_USERNAME"   # ← fallback if SRD_REMOTE_USER env var is not set
 CONTROL_SOCKET = "/tmp/srd_ctl_%h"        # leave as-is
 LOG_DIR        = "/path/to/your/srd_logs" # ← fallback if SRD_LOG_DIR env var is not set
 
-# Override LOG_DIR with environment variable if set.
-# Add to ~/.zshrc:  export SRD_LOG_DIR="/Users/yourname/Desktop/srd_logs"
-LOG_DIR = os.environ.get("SRD_LOG_DIR", LOG_DIR)
+# Override config with environment variables if set.
+# Add both to ~/.zshrc on each machine:
+#   export SRD_REMOTE_USER="mangelet"
+#   export SRD_LOG_DIR="/Users/mangelet/Desktop/srd_logs"
+REMOTE_USER = os.environ.get("SRD_REMOTE_USER", REMOTE_USER)
+LOG_DIR     = os.environ.get("SRD_LOG_DIR",     LOG_DIR)
 
 # --- ANSI Color Codes ---
 class Colors:
