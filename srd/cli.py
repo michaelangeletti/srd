@@ -251,6 +251,11 @@ def get_remote_stats(remote_path: str) -> Tuple[Set[str], int, List[str]]:
             # Remove "FILE:" prefix and leading "./"
             file_path = line[5:].lstrip('./')
             if file_path:  # Skip empty paths
+                if ROLE_CODE:
+                    check_name = file_path[:-4] if file_path.lower().endswith('.md5') else file_path
+                    base_stem  = Path(check_name).stem
+                    if not base_stem.lower().endswith(f'_{ROLE_CODE.lower()}'):
+                        continue
                 manifest.add(file_path)
                 remote_files.add(file_path)
         elif line.startswith("SIZE_BYTES:"):
@@ -301,9 +306,9 @@ def get_local_stats(source_path: str) -> Tuple[Set[str], int, List[str]]:
             # Role code filter: include files matching *_<role>.<ext>
             # and their .md5 sidecars; skip everything else when active.
             if ROLE_CODE:
-                check_name = item.name[:-4] if item.name.endswith('.md5') else item.name
+                check_name = item.name[:-4] if item.name.lower().endswith('.md5') else item.name
                 base_stem  = Path(check_name).stem
-                if not base_stem.endswith(f'_{ROLE_CODE}'):
+                if not base_stem.lower().endswith(f'_{ROLE_CODE.lower()}'):
                     continue
             rel = item.relative_to(src)
             manifest.add(str(rel))
@@ -812,6 +817,18 @@ def run_rsync_transfer(src: str, dst: Path, total_bytes: int = 0, remote_dst: st
         ])
         logger.info(f"{Colors.YELLOW}Push mode: setting open permissions on server (--no-owner --no-group --chmod=Du=rwx,Dgo=rwx,Fu=rwx,Fgo=rwx){Colors.RESET}")
 
+    # Role code filter: only transfer files whose stem ends with _{ROLE_CODE}.
+    # Directories must be included first so rsync traverses nested subdirs.
+    if ROLE_CODE:
+        rsync_cmd.extend([
+            '--include=*/',
+            f'--include=*_{ROLE_CODE}.*',
+            '--exclude=*',
+        ])
+        logger.info(
+            f"{Colors.YELLOW}Role filter active: *_{ROLE_CODE}.* files only{Colors.RESET}"
+        )
+
     # Add source and destination
     # In push mode, remote_dst overrides dst so rsync sends to the server.
     effective_dst = remote_dst if remote_dst else str(dst)
@@ -1070,6 +1087,11 @@ def get_remote_dest_stats(remote_path: str) -> Tuple[Set[str], int, List[str]]:
         if line.startswith("FILE:"):
             file_path = line[5:].lstrip('./')
             if file_path:
+                if ROLE_CODE:
+                    check_name = file_path[:-4] if file_path.lower().endswith('.md5') else file_path
+                    base_stem  = Path(check_name).stem
+                    if not base_stem.lower().endswith(f'_{ROLE_CODE.lower()}'):
+                        continue
                 manifest.add(file_path)
         elif line.startswith("SIZE_BYTES:"):
             try:
@@ -1752,7 +1774,7 @@ def main():
             ('--push',           'Push local files TO the remote server'),
             ('--create-dest',    'Create destination directory on server  (with --push)'),
             ('--local',          'Disk-to-disk mode, no SSH required'),
-            ('--role <code>',    'Transfer only files with this role code, e.g. --role pm'),
+            ('--role <code>',    'Transfer only files with role suffix, e.g. --role pm, --role sl, --role m_sl'),
             ('--compress, -z',   'Enable rsync compression'),
             ('--resume',         'Resume an interrupted transfer'),
             ('--csv',            'Generate a CSV file list alongside the log and tree'),
