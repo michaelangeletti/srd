@@ -37,13 +37,16 @@ class Colors:
     BLUE    = '\033[94m'
     MAGENTA = '\033[95m'
     CYAN    = '\033[96m'
+    PURPLE  = '\033[35m'
     BOLD    = '\033[1m'
+    DIM     = '\033[2m'
 
     @staticmethod
     def disable():
         """Disable colors (for non-TTY output)."""
         Colors.RESET = Colors.RED = Colors.GREEN = Colors.YELLOW = ''
         Colors.BLUE  = Colors.MAGENTA = Colors.CYAN = Colors.BOLD = ''
+        Colors.PURPLE = Colors.DIM = ''
 
 # --- Constants ---
 SSH_TIMEOUT          = 30
@@ -83,6 +86,9 @@ class TransferStats:
     checksum_mismatches:  List[str]
     verified_count:       int = 0
     unverifiable_count:   int = 0
+
+# Role code filter — set by --role flag in main(); empty string means no filter.
+ROLE_CODE = ''
 
 # Module-level logger — handlers are added inside main() once LOG_FILE is known.
 # All functions use this logger; it works correctly once main() configures it.
@@ -287,6 +293,13 @@ def get_local_stats(source_path: str) -> Tuple[Set[str], int, List[str]]:
         if any(part.startswith('.') for part in item.parts):
             continue
         if item.is_file():
+            # Role code filter: include files matching *_<role>.<ext>
+            # and their .md5 sidecars; skip everything else when active.
+            if ROLE_CODE:
+                check_name = item.name[:-4] if item.name.endswith('.md5') else item.name
+                base_stem  = Path(check_name).stem
+                if not base_stem.endswith(f'_{ROLE_CODE}'):
+                    continue
             rel = item.relative_to(src)
             manifest.add(str(rel))
             try:
@@ -317,13 +330,26 @@ def extract_hash_from_sidecar(sidecar_path: Path) -> Optional[str]:
         return None
 
 
-def calculate_md5(file_path: Path) -> Optional[str]:
-    """Calculate MD5 hash of a file."""
+def calculate_md5(file_path: Path, progress_callback=None) -> Optional[str]:
+    """
+    Calculate MD5 hash of a file.
+    If progress_callback is provided, called with (bytes_done, file_size)
+    after each 8 MB chunk so the caller can update a live progress bar.
+    """
+    CHUNK = 8 * 1024 * 1024  # 8 MB — large enough for efficient I/O
     try:
-        md5_hash = hashlib.md5()
+        md5_hash   = hashlib.md5()
+        file_size  = file_path.stat().st_size
+        bytes_done = 0
         with file_path.open('rb') as f:
-            for chunk in iter(lambda: f.read(MD5_CHUNK_SIZE), b''):
+            while True:
+                chunk = f.read(CHUNK)
+                if not chunk:
+                    break
                 md5_hash.update(chunk)
+                bytes_done += len(chunk)
+                if progress_callback:
+                    progress_callback(bytes_done, file_size)
         return md5_hash.hexdigest()
     except Exception as e:
         logger.error(f"Error calculating MD5 for {file_path}: {e}")
@@ -468,6 +494,7 @@ def verify_integrity(
     verified_count  = 0
     verify_start    = time.time()
     v_active_lines  = 0   # tracks live bar state for the verify phase
+    eta_str         = 'ETA --:--:--'  # shared between bar and md5 callback
     LOG_INTERVAL_V  = 30  # seconds between file log entries
     last_log_time_v = verify_start
 
@@ -491,7 +518,7 @@ def verify_integrity(
             eta_str = f"ETA {format_eta(remaining / rate)}"
         else:
             eta_str = "ETA --:--:--"
-        bar_line   = (f"{Colors.BOLD}[{bar}] {pct*100:5.1f}%  "
+        bar_line   = (f"{Colors.PURPLE}{Colors.BOLD}[{bar}] {pct*100:5.1f}%  "
                       f"{verified_count}/{total_to_verify} verified"
                       f"  |  {elapsed_str} elapsed  |  {eta_str}{Colors.RESET}")
         file_label = (f"{Colors.CYAN}[verify] {Path(current_file).name}{Colors.RESET}"
@@ -524,7 +551,39 @@ def verify_integrity(
                 logger.error(f"  Invalid sidecar format: {rel_path}.md5")
                 continue
 
-            actual_md5 = calculate_md5(full_path)
+            # Per-chunk callback keeps bar alive during large file reads.
+            _last_cb = [time.time()]
+
+            def _md5_cb(done: int, total: int) -> None:
+                nonlocal eta_str, v_active_lines
+                now = time.time()
+                if now - _last_cb[0] < 2.0:
+                    return
+                _last_cb[0] = now
+                elapsed_v   = now - verify_start
+                pct_in_file = done / total if total > 0 else 0
+                eff_done    = verified_count + pct_in_file
+                remaining   = total_to_verify - eff_done
+                rate        = eff_done / elapsed_v if elapsed_v > 1 else 0
+                eta_str = (f'ETA {format_eta(remaining / rate)}'
+                           if rate > 0 and remaining > 0 else 'ETA --:--:--')
+                pct_bar = min(eff_done / total_to_verify, 1.0) if total_to_verify > 0 else 0
+                filled2 = int(32 * pct_bar)
+                bar2    = '\u2588' * filled2 + '\u2591' * (32 - filled2)
+                el_str  = format_eta(elapsed_v)
+                bar_line2 = (f'{Colors.PURPLE}{Colors.BOLD}[{bar2}] {pct_bar*100:5.1f}%  '
+                             f'{verified_count}/{total_to_verify} verified'
+                             f'  |  {el_str} elapsed  |  {eta_str}{Colors.RESET}')
+                file_prog = (f'{Colors.CYAN}[verify] {Path(rel_path).name}  '
+                             f'{format_bytes(done)}/{format_bytes(total)}'
+                             f'  {pct_in_file*100:.1f}%{Colors.RESET}')
+                if v_active_lines > 0:
+                    sys.stdout.write('\033[1A\r')
+                sys.stdout.write(bar_line2 + '\033[K\n\r' + file_prog + '\033[K')
+                sys.stdout.flush()
+                v_active_lines = 2
+
+            actual_md5 = calculate_md5(full_path, progress_callback=_md5_cb)
 
             if not actual_md5:
                 close_verify_bar()
@@ -612,7 +671,7 @@ def print_final_report(stats: TransferStats) -> bool:
     # ── Transfer summary ─────────────────────────────────────────────────────
     logger.info(f"Source : {stats.remote_file_count:>6} files  ({format_bytes(stats.remote_size_bytes)})")
     logger.info(f"Dest   : {stats.local_file_count:>6} files  ({stats.local_size})")
-    logger.info(f"Duration: {stats.duration:.2f} seconds ({stats.duration/60:.1f} minutes)")
+    logger.info(f"Duration: {format_eta(stats.duration)}  ({stats.duration/60:.1f} minutes)")
     logger.info("-" * 60)
 
     # ── Verification summary ─────────────────────────────────────────────────
@@ -827,7 +886,7 @@ def run_rsync_transfer(src: str, dst: Path, total_bytes: int = 0, remote_dst: st
             elapsed_total = time.time() - start_time
             elapsed_str   = format_eta(elapsed_total)
 
-            bar_line = (f"{Colors.BOLD}[{bar}] {pct*100:5.1f}%  "
+            bar_line = (f"{Colors.PURPLE}{Colors.BOLD}[{bar}] {pct*100:5.1f}%  "
                         f"{files_part}{size_ref}  |  {elapsed_str} elapsed  |  {eta_part}{Colors.RESET}")
             rsync_display = f"{Colors.CYAN}[rsync] {rsync_line}{Colors.RESET}"
 
@@ -946,7 +1005,7 @@ def run_rsync_transfer(src: str, dst: Path, total_bytes: int = 0, remote_dst: st
             bar           = '█' * 32
             size_ref      = f"  |  total {format_bytes(total_bytes)}" if total_bytes > 0 else ""
             files_label   = f"{total_files}/{total_files} files" if total_files > 0 else "complete"
-            bar_line      = (f"{Colors.BOLD}[{bar}] 100.0%  "
+            bar_line      = (f"{Colors.PURPLE}{Colors.BOLD}[{bar}] 100.0%  "
                              f"{files_label}{size_ref}  |  {elapsed_str} elapsed  |  ETA 00:00:00{Colors.RESET}")
             if active_lines > 0:
                 sys.stdout.write('\033[1A\r')
@@ -963,7 +1022,7 @@ def run_rsync_transfer(src: str, dst: Path, total_bytes: int = 0, remote_dst: st
             if stderr:
                 logger.warning(f"Errors: {stderr.strip()}")
         else:
-            logger.info(f"{Colors.GREEN}✓ Rsync completed successfully in {duration:.2f} seconds{Colors.RESET}")
+            logger.info(f"{Colors.GREEN}✓ Rsync completed successfully in {format_eta(duration)}{Colors.RESET}")
         
         return process.returncode, duration
         
@@ -1145,7 +1204,7 @@ export -f verify_file 2>/dev/null || true
         else:
             eta_str = "ETA --:--:--"
         bar_line = (
-            f"{Colors.BOLD}[{bar}] {pct*100:5.1f}%  "
+            f"{Colors.PURPLE}{Colors.BOLD}[{bar}] {pct*100:5.1f}%  "
             f"{processed}/{total_to_verify} verified  "
             f"|  {elapsed_str} elapsed  |  {eta_str}{Colors.RESET}"
         )
@@ -1479,6 +1538,8 @@ def replicate() -> bool:
     logger.info(f"Starting replication  [{mode_label}]")
     logger.info(f"Source: {REMOTE_DIR}")
     logger.info(f"Dest:   {LOCAL_DIR}")
+    if ROLE_CODE:
+        logger.info(f"Role filter: _{ROLE_CODE}  (matching files and .md5 sidecars only)")
     logger.info("="*60 + Colors.RESET)
 
     if USE_PUSH:
@@ -1617,7 +1678,31 @@ def replicate() -> bool:
     else:
         tree_path = str(local_path)  # local destination (pull mode)
         tree_label = 'destination'
-    generate_source_tree(tree_path, TREE_FILE, label=tree_label)
+    # If source path is unavailable (e.g. drive unmounted mid-run),
+    # offer an interactive retry rather than silently skipping the tree.
+    _tree_src = Path(tree_path)
+    if not _tree_src.exists():
+        logger.warning(f"{Colors.YELLOW}⚠ Tree source path unavailable: {tree_path}{Colors.RESET}")
+        if sys.stdout.isatty():
+            while True:
+                try:
+                    resp = input(
+                        "  Remount the volume and press Enter to retry, "
+                        "or type 'skip' to continue without the tree: "
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    resp = 'skip'
+                if resp == 'skip':
+                    logger.warning("Tree generation skipped — re-run after remounting.")
+                    break
+                if _tree_src.exists():
+                    generate_source_tree(tree_path, TREE_FILE, label=tree_label)
+                    break
+                logger.warning(f"{Colors.YELLOW}  Still not found: {tree_path}{Colors.RESET}")
+        else:
+            logger.warning("Tree generation skipped (non-interactive) — remount and re-run.")
+    else:
+        generate_source_tree(tree_path, TREE_FILE, label=tree_label)
 
     # Print report (same structure for all modes)
     success = print_final_report(stats)
@@ -1640,31 +1725,54 @@ def main():
 
     # ── Usage ─────────────────────────────────────────────────────────────────
     def print_usage():
-        print("Usage:")
-        print(f"  {sys.argv[0]} <SOURCE_DIR> <DEST_DIR> [OPTIONS]")
+        W  = sys.argv[0]
+        B  = Colors.BOLD
+        R  = Colors.RESET
+        P  = Colors.PURPLE
+        G  = Colors.GREEN
+        C  = Colors.CYAN
+        Y  = Colors.YELLOW
+        DM = Colors.DIM
+        print(f'{B}{P}' + '='*58 + f'{R}')
+        print(f'{B}{P}  srd — SMPL Replicate Directory  v1.0{R}')
+        print(f'{B}{P}  Stanford Media Preservation Lab{R}')
+        print(f'{B}{P}' + '='*58 + f'{R}')
         print()
-        print("Options:")
-        print("  --open-ssh        Open a persistent SSH session for Duo 2FA (run this first)")
-        print("  --push            Push local files TO the remote server (reverses direction)")
-        print("  --create-dest     Create destination directory on server if it does not exist")
-        print("                    (only valid with --push; uses open rwx permissions)")
-        print("  --local           Replicate from a local directory (no SSH required)")
-        print("  --compress, -z    Enable compression (slower but uses less bandwidth)")
-        print("  --resume          Enable resume for interrupted transfers (slower)")
-        print("  --csv             Generate a CSV file list alongside the log and tree")
-        print("  --help, -h        Show this message")
+        print(f'{B}Usage:{R}')
+        print(f'  {C}{W}{R} {Y}<SOURCE_DIR> <DEST_DIR>{R} {DM}[OPTIONS]{R}')
         print()
-        print("Examples (SFTP/remote):")
-        print(f"  {sys.argv[0]} /pool0/smpl2/digreq-2664 /Users/mangelet/Desktop/copy")
-        print(f"  {sys.argv[0]} /pool0/smpl2/digreq-2664 /Users/mangelet/Desktop/copy --compress")
+        print(f'{B}Options:{R}')
+        opts = [
+            ('--open-ssh',       'Open persistent SSH session for Duo 2FA  (run first)'),
+            ('--push',           'Push local files TO the remote server'),
+            ('--create-dest',    'Create destination directory on server  (with --push)'),
+            ('--local',          'Disk-to-disk mode, no SSH required'),
+            ('--role <code>',    'Transfer only files with this role code, e.g. --role pm'),
+            ('--compress, -z',   'Enable rsync compression'),
+            ('--resume',         'Resume an interrupted transfer'),
+            ('--csv',            'Generate a CSV file list alongside the log and tree'),
+            ('--help, -h',       'Show this message'),
+        ]
+        for flag, desc in opts:
+            print(f'  {G}{flag:<22}{R}  {desc}')
         print()
-        print("Examples (local disk-to-disk):")
+        print(f'{B}Examples — pull from server:{R}')
+        print(f'  {C}{W}{R} /pool0/smpl2/digreq-2664 /Users/mangelet/Desktop/copy')
+        print(f'  {C}{W}{R} /pool0/smpl2/digreq-2664 /Users/mangelet/Desktop/copy {Y}--compress{R}')
+        print(f'  {C}{W}{R} /pool0/smpl2/specpat-3574 /Users/mangelet/Desktop/copy {Y}--role pm{R}')
+        print()
+        print(f'{B}Examples — push to server:{R}')
+        print(f'  {C}{W}{R} /Volumes/Drive/digreq-2664 /pool0/smpl2 {Y}--push{R}')
+        print(f'  {C}{W}{R} /Volumes/Drive/digreq-2664 /pool0/smpl2 {Y}--push --create-dest{R}')
+        print()
+        print(f'{B}Examples — local disk-to-disk:{R}')
         if IS_MACOS:
-            print(f"  {sys.argv[0]} /Volumes/MediaDrive/digreq-2664 /Users/mangelet/Desktop/copy --local")
-            print(f"  {sys.argv[0]} /Volumes/MediaDrive/digreq-2664 /Volumes/BackupDrive/copy --local --resume")
+            print(f'  {C}{W}{R} /Volumes/MediaDrive/digreq-2664 /Volumes/BackupDrive/copy {Y}--local{R}')
+            print(f'  {C}{W}{R} /Volumes/MediaDrive/digreq-2664 /Volumes/BackupDrive/copy {Y}--local --resume{R}')
         else:
-            print(f"  {sys.argv[0]} /media/MediaDrive/digreq-2664 /home/mangelet/copy --local")
-            print(f"  {sys.argv[0]} /media/MediaDrive/digreq-2664 /media/BackupDrive/copy --local --resume")
+            print(f'  {C}{W}{R} /media/MediaDrive/digreq-2664 /home/mangelet/copy {Y}--local{R}')
+            print(f'  {C}{W}{R} /media/MediaDrive/digreq-2664 /media/BackupDrive/copy {Y}--local --resume{R}')
+        print(f'{B}{P}' + '='*58 + f'{R}')
 
     # ── --help ────────────────────────────────────────────────────────────────
     if any(arg in sys.argv[1:] for arg in ['--help', '-h']):
@@ -1714,7 +1822,13 @@ def main():
     USE_CREATE_DEST = False
     USE_CSV         = False
 
-    for arg in sys.argv[3:]:
+    global ROLE_CODE
+    ROLE_CODE = ''
+
+    args = sys.argv[3:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
         if arg in ['--compress', '-z']:
             USE_COMPRESSION = True
         elif arg == '--resume':
@@ -1727,9 +1841,16 @@ def main():
             USE_CREATE_DEST = True
         elif arg == '--csv':
             USE_CSV = True
+        elif arg == '--role':
+            if i + 1 >= len(args):
+                print('Error: --role requires a value (e.g. --role pm)')
+                sys.exit(1)
+            ROLE_CODE = args[i + 1].lstrip('_')
+            i += 1
         else:
             print(f"Error: Unknown option '{arg}'")
             sys.exit(1)
+        i += 1
 
     if USE_PUSH and USE_LOCAL:
         print("Error: --push and --local are mutually exclusive")
