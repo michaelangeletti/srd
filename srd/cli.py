@@ -94,6 +94,7 @@ class TransferStats:
     checksum_mismatches:  List[str]
     verified_count:       int = 0
     unverifiable_count:   int = 0
+    full_source_bytes:    int = 0      # unfiltered source size (for role filter display)
 
 # Role code filter — set by --role flag in main(); empty string means no filter.
 ROLE_CODE = ''
