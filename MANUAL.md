@@ -2,7 +2,7 @@
 ## User Manual
 
 **Stanford Media Preservation Lab**
-Version 0.1 — 2026
+Version 1.1 — May 2026
 
 ---
 
@@ -222,7 +222,7 @@ If you forget and run srd without opening the session first, you will see a clea
   Run: srd --open-ssh
 ```
 
-> **macOS note:** The macOS version does not require this step. SSH key authentication is handled directly and Duo is not required on that platform.
+> **Note:** The `--open-ssh` step is required on both macOS and Ubuntu when connecting to servers that require Duo two-factor authentication. The control socket does not survive a reboot — run `srd --open-ssh` again at the start of each session.
 
 ---
 

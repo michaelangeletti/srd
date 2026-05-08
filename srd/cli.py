@@ -245,15 +245,18 @@ def get_remote_stats(remote_path: str) -> Tuple[Set[str], int, List[str]]:
         return set(), 0, []
     
     manifest = set()
+    all_remote_files = set()   # all files before role filter (for size reporting)
     remote_files = set()
     orphans = []
-    total_bytes = 0
+    full_total_bytes = 0       # total size of entire source directory
+    total_bytes      = 0       # size of filtered files only
     
     for line in output.splitlines():
         if line.startswith("FILE:"):
             # Remove "FILE:" prefix and leading "./"
             file_path = line[5:].lstrip('./')
             if file_path:  # Skip empty paths
+                all_remote_files.add(file_path)
                 if ROLE_CODE:
                     check_name = file_path[:-4] if file_path.lower().endswith('.md5') else file_path
                     base_stem  = Path(check_name).stem
@@ -263,9 +266,9 @@ def get_remote_stats(remote_path: str) -> Tuple[Set[str], int, List[str]]:
                 remote_files.add(file_path)
         elif line.startswith("SIZE_BYTES:"):
             try:
-                total_bytes = int(line[11:].strip())
+                full_total_bytes = int(line[11:].strip())
             except (ValueError, AttributeError):
-                total_bytes = 0
+                full_total_bytes = 0
     
     # Check for orphan files (data files without .md5 sidecars)
     for file_path in sorted(remote_files):
@@ -274,8 +277,24 @@ def get_remote_stats(remote_path: str) -> Tuple[Set[str], int, List[str]]:
             if md5_path not in remote_files:
                 orphans.append(file_path)
     
-    size_str = format_bytes(total_bytes)
-    logger.info(f"{Colors.GREEN}✓ Remote: {len(manifest)} files, {size_str}{Colors.RESET}")
+    # When role filter is active, calculate filtered size separately
+    # (SIZE_BYTES from SSH covers the whole directory)
+    if ROLE_CODE and all_remote_files:
+        # Approximate filtered size: proportional share of total
+        # (exact size requires a second SSH call; proportion is good enough for display)
+        ratio       = len(manifest) / len(all_remote_files) if all_remote_files else 0
+        total_bytes = int(full_total_bytes * ratio)
+    else:
+        total_bytes = full_total_bytes
+    
+    if ROLE_CODE:
+        logger.info(
+            f"{Colors.GREEN}✓ Remote: {len(manifest)} files, "
+            f"{format_bytes(total_bytes)} "
+            f"(filtered from {format_bytes(full_total_bytes)} total){Colors.RESET}"
+        )
+    else:
+        logger.info(f"{Colors.GREEN}✓ Remote: {len(manifest)} files, {format_bytes(total_bytes)}{Colors.RESET}")
     
     return manifest, total_bytes, orphans
 
@@ -326,8 +345,20 @@ def get_local_stats(source_path: str) -> Tuple[Set[str], int, List[str]]:
         if not f.endswith('.md5') and f"{f}.md5" not in manifest
     ]
 
-    size_str = format_bytes(total_bytes)
-    logger.info(f"{Colors.GREEN}✓ Source: {len(manifest)} files, {size_str}{Colors.RESET}")
+    if ROLE_CODE:
+        # Calculate total unfiltered size for display
+        full_total = sum(
+            item.stat().st_size
+            for item in src.rglob('*')
+            if item.is_file() and not any(p.startswith('.') for p in item.parts)
+        )
+        logger.info(
+            f"{Colors.GREEN}✓ Source: {len(manifest)} files, "
+            f"{format_bytes(total_bytes)} "
+            f"(filtered from {format_bytes(full_total)} total){Colors.RESET}"
+        )
+    else:
+        logger.info(f"{Colors.GREEN}✓ Source: {len(manifest)} files, {format_bytes(total_bytes)}{Colors.RESET}")
 
     return manifest, total_bytes, orphans
 
@@ -682,7 +713,14 @@ def print_final_report(stats: TransferStats) -> bool:
     logger.info("=" * 60 + Colors.RESET)
 
     # ── Transfer summary ─────────────────────────────────────────────────────
-    logger.info(f"Source : {stats.remote_file_count:>6} files  ({format_bytes(stats.remote_size_bytes)})")
+    if ROLE_CODE and stats.full_source_bytes > 0:
+        logger.info(
+            f"Source : {stats.remote_file_count:>6} files  "
+            f"({format_bytes(stats.remote_size_bytes)} "
+            f"filtered from {format_bytes(stats.full_source_bytes)} total)"
+        )
+    else:
+        logger.info(f"Source : {stats.remote_file_count:>6} files  ({format_bytes(stats.remote_size_bytes)})")
     logger.info(f"Dest   : {stats.local_file_count:>6} files  ({stats.local_size})")
     logger.info(f"Duration: {format_eta(stats.duration)}  ({stats.duration/60:.1f} minutes)")
     logger.info("-" * 60)
@@ -1764,7 +1802,7 @@ def main():
         Y  = Colors.YELLOW
         DM = Colors.DIM
         print(f'{B}{P}' + '='*58 + f'{R}')
-        print(f'{B}{P}  srd — SMPL Replicate Directory  v1.0{R}')
+        print(f'{B}{P}  srd — SMPL Replicate Directory  v1.1{R}')
         print(f'{B}{P}  Stanford Media Preservation Lab{R}')
         print(f'{B}{P}' + '='*58 + f'{R}')
         print()
@@ -1777,10 +1815,11 @@ def main():
             ('--push',           'Push local files TO the remote server'),
             ('--create-dest',    'Create destination directory on server  (with --push)'),
             ('--local',          'Disk-to-disk mode, no SSH required'),
-            ('--role <code>',    'Transfer only files with role suffix, e.g. --role pm, --role sl, --role m_sl'),
+            ('--role <code>',    'Transfer only matching role: pm, sl, sh, thumb, m_sl, m_sh, m_thumb'),
             ('--compress, -z',   'Enable rsync compression'),
             ('--resume',         'Resume an interrupted transfer'),
             ('--csv',            'Generate a CSV file list alongside the log and tree'),
+            ('--version, -v',    'Show version and exit'),
             ('--help, -h',       'Show this message'),
         ]
         for flag, desc in opts:
@@ -1803,6 +1842,13 @@ def main():
             print(f'  {C}{W}{R} /media/MediaDrive/digreq-2664 /home/mangelet/copy {Y}--local{R}')
             print(f'  {C}{W}{R} /media/MediaDrive/digreq-2664 /media/BackupDrive/copy {Y}--local --resume{R}')
         print(f'{B}{P}' + '='*58 + f'{R}')
+
+    # ── --version / -v ────────────────────────────────────────────────────────
+    if any(arg in sys.argv[1:] for arg in ['--version', '-v']):
+        _plat = 'macOS' if IS_MACOS else 'Ubuntu 24.04'
+        print(f'srd v1.1 -- May 2026 ({_plat})')
+        print('Stanford Media Preservation Lab')
+        sys.exit(0)
 
     # ── --help ────────────────────────────────────────────────────────────────
     if any(arg in sys.argv[1:] for arg in ['--help', '-h']):
@@ -1875,7 +1921,13 @@ def main():
             if i + 1 >= len(args):
                 print('Error: --role requires a value (e.g. --role pm)')
                 sys.exit(1)
-            ROLE_CODE = args[i + 1].lstrip('_')
+            _role_input = args[i + 1].lstrip('_').lower()
+            _valid_roles = ['pm', 'sl', 'sh', 'thumb', 'm_sl', 'm_sh', 'm_thumb']
+            if _role_input not in _valid_roles:
+                print(f"Error: invalid role code '{_role_input}'.")
+                print(f"  Valid codes: {', '.join(_valid_roles)}")
+                sys.exit(1)
+            ROLE_CODE = _role_input
             i += 1
         else:
             print(f"Error: Unknown option '{arg}'")
@@ -1914,7 +1966,7 @@ def main():
     SCRIPT_HEADER = f"""=========================
 Stanford Media Preservation Lab
 SMPL Replicate Directory (srd)
-v1.0 -- April 2026 ({_platform_label})
+v1.1 -- May 2026 ({_platform_label})
 ========================="""
     print(SCRIPT_HEADER)
     print()
