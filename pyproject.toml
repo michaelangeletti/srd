@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "smpl-replicate-directory"
+name = "srd"
 version = "1.1.0"
 description = "Secure file replication with MD5 integrity verification for digital preservation"
 readme = "README.md"
