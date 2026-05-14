@@ -1,4 +1,4 @@
-# smpl-replicate-directory
+# srd
 
 **srd** — SMPL Replicate Directory
 **v1.1 — May 2026**
