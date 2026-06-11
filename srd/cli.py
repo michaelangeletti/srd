@@ -851,13 +851,16 @@ def run_rsync_transfer(src: str, dst: Path, total_bytes: int = 0, remote_dst: st
     # Push mode: set open permissions on server so colleagues can access the files.
     # --no-owner / --no-group: don't attempt to preserve ownership (avoids permission errors).
     # --chmod: make all directories and files fully readable/writable/executable by everyone.
+    # --omit-dir-times: don't try to set directory timestamps — requires ownership of the
+    #   directory which we don't have on the staging server's parent dirs.
     if USE_PUSH:
         rsync_cmd.extend([
             '--no-owner',
             '--no-group',
+            '--omit-dir-times',
             '--chmod=Du=rwx,Dgo=rwx,Fu=rwx,Fgo=rwx',
         ])
-        logger.info(f"{Colors.YELLOW}Push mode: setting open permissions on server (--no-owner --no-group --chmod=Du=rwx,Dgo=rwx,Fu=rwx,Fgo=rwx){Colors.RESET}")
+        logger.info(f"{Colors.YELLOW}Push mode: setting open permissions on server (--no-owner --no-group --omit-dir-times --chmod=Du=rwx,Dgo=rwx,Fu=rwx,Fgo=rwx){Colors.RESET}")
 
     # Role code filter: only transfer files whose stem ends with _{ROLE_CODE}.
     # Directories must be included first so rsync traverses nested subdirs.
